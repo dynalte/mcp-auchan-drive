@@ -4,7 +4,7 @@
  */
 
 import type { Order } from '../types.js';
-import { parsePrice } from './html-utils.js';
+import { decode, parsePrice } from './html-utils.js';
 
 export type { Order };
 
@@ -42,7 +42,34 @@ export function parseOrdersPage(html: string): Order[] {
     const orderRef = hrefM[2];
     const orderNumber = hrefM[3];
 
-    // Extrait tous les <span>...</span> du bloc
+    // Structure actuelle (2026) : valeurs identifiées par classes CSS.
+    // Le fallback historique fondé sur l'ordre des <span> reste disponible.
+    const currentStoreName = extractClassText(block, 'a-pointOfService__place');
+    const currentReference = extractClassText(block, 'p-order__reference');
+    const currentStatus = extractClassText(block, 'a-simplifiedState__label');
+    const currentProductCount = extractClassText(block, 'm-productThumbnails__count');
+    const currentTotal = extractClassText(block, 'p-order__totalAmount');
+
+    if (currentReference || currentStoreName || currentStatus || currentTotal) {
+      const date = extractOrderDate(currentReference);
+      const productCountM = currentProductCount.match(/(\d+)/);
+      const productCount = productCountM ? parseInt(productCountM[1], 10) : 0;
+
+      orders.push({
+        orderRef,
+        orderNumber,
+        date,
+        storeName: currentStoreName,
+        status: currentStatus,
+        productCount,
+        total: parseOrderPrice(currentTotal),
+        totalFormatted: currentTotal,
+        detailUrl,
+      });
+      continue;
+    }
+
+    // Ancienne structure : extrait tous les <span>...</span> du bloc.
     const spans: string[] = [];
     const spanPattern = /<span[^>]*>([^<]*)<\/span>/g;
     let spanMatch: RegExpExecArray | null;
@@ -89,6 +116,29 @@ export function parseOrdersPage(html: string): Order[] {
   }
 
   return orders;
+}
+
+/** Extrait et nettoie le texte d'un élément portant une classe CSS donnée. */
+function extractClassText(block: string, className: string): string {
+  const escaped = className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `<([a-z][a-z0-9]*)[^>]*class=["'][^"']*\\b${escaped}(?=\\s|["'])[^"']*["'][^>]*>` +
+      `([\\s\\S]*?)<\\/\\1>`,
+    'i',
+  );
+  const match = block.match(pattern);
+  if (!match) return '';
+
+  return decode(match[2])
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Accepte "Commande n° ... du ..." ainsi que "Commande ... - ...". */
+function extractOrderDate(reference: string): string {
+  const match = reference.match(/(?:du|[-–—])\s+(.+)$/i);
+  return match?.[1]?.trim() ?? '';
 }
 
 /** Convertit "38,62 €" → centimes entiers (3862). */

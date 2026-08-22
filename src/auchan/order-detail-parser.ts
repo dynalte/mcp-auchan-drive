@@ -1,172 +1,266 @@
 /**
- * order-detail-parser.ts — Parse le HTML de GET /client/mes-commandes/{ref}/{num}
- * Même approche que les autres parsers : regex sur le HTML brut.
+ * Parse le HTML de GET /client/mes-commandes/{ref}/{num}.
+ *
+ * Auchan a fait évoluer le DOM des détails de commande en 2026. Le parseur
+ * comprend la structure actuelle et conserve les sélecteurs historiques afin
+ * de ne pas casser les pages encore servies par les anciens renderers CREST.
  */
 
 import type { OrderDetail, OrderProduct } from '../types.js';
-import { parsePrice, decode } from './html-utils.js';
+import { decode, parsePrice } from './html-utils.js';
 
-/**
- * Parse la page HTML de détail d'une commande.
- *
- * Structure HTML attendue :
- * ```html
- * <!-- Tracker de statut -->
- * <li class="o-orderStatus__step o-orderStatus__step--active"><span>En cours de préparation</span></li>
- *
- * <!-- Créneau de retrait -->
- * <p>Retrait prévu le: mardi 16 juin entre 17h00 et 17h30</p>
- *
- * <!-- Magasin -->
- * <div class="m-storeInfo">
- *   <p class="m-storeInfo__name">Auchan Drive Caluire</p>
- *   <p class="m-storeInfo__address">10 Chemin Jean Petit 69300 CALUIRE-ET-CUIRE</p>
- * </div>
- *
- * <!-- Total -->
- * <span class="m-orderSummary__totalPrice">38,62 €</span>
- *
- * <!-- Produits par catégorie -->
- * <h2 class="m-orderProductList__categoryTitle">Boucherie, volaille, poissonnerie</h2>
- * <div class="m-orderProduct">
- *   <p class="m-orderProduct__name"><strong>AUCHAN</strong> Chipolatas supérieures aux herbes</p>
- *   <span class="m-orderProduct__quantity">Quantité : 6</span>
- *   <span class="m-orderProduct__price">8,34 €</span>
- * </div>
- * ```
- */
 export function parseOrderDetailPage(
   html: string,
   orderRef: string,
   orderNumber: string,
 ): OrderDetail {
-  // ── Statut courant (étape active du tracker) ─────────────────────────────────
-  // L'étape active porte une classe contenant "active" ou "current", ou un aria-current.
-  const statusActiveM = html.match(
-    /o-orderStatus__step[^"]*(?:active|current)[^"]*"[^>]*>[\s\S]*?<span[^>]*>([^<]+)/i,
-  ) ?? html.match(/aria-current="[^"]*"[^>]*>[\s\S]*?<span[^>]*>([^<]+)/i);
-
-  // Fallback : prendre le dernier span dans la liste de statuts non vide
-  const status = statusActiveM
-    ? decode(statusActiveM[1].trim())
-    : extractLastStatus(html);
-
-  // ── Créneau de retrait ───────────────────────────────────────────────────────
-  const pickupM = html.match(/Retrait pr[eé]vu\s+le\s*:\s*([^\n<]+)/i);
-  const pickupSlot = pickupM ? decode(pickupM[1].trim()) : undefined;
-
-  // ── Magasin : nom ────────────────────────────────────────────────────────────
-  const storeNameM = html.match(/m-storeInfo__name[^>]*>([^<]+)/)
-    ?? html.match(/class="[^"]*storeName[^"]*"[^>]*>([^<]+)/);
-  const storeName = storeNameM ? decode(storeNameM[1].trim()) : '';
-
-  // ── Magasin : adresse ────────────────────────────────────────────────────────
-  const storeAddrM = html.match(/m-storeInfo__address[^>]*>([\s\S]*?)<\/p>/)
-    ?? html.match(/class="[^"]*storeAddress[^"]*"[^>]*>([\s\S]*?)<\/(?:p|div)>/);
-  const storeAddress = storeAddrM
-    ? decode(storeAddrM[1].replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim())
-    : '';
-
-  // ── Total ─────────────────────────────────────────────────────────────────────
-  const totalM = html.match(/m-orderSummary__totalPrice[^>]*>([^<]+)/)
-    ?? html.match(/orderTotal[^>]*>([^<]+)/);
-  const totalFormatted = totalM ? decode(totalM[1].trim()) : '';
-  const total = parsePrice(totalFormatted);
-
-  // ── Produits par catégorie ────────────────────────────────────────────────────
-  const products = parseProducts(html);
+  const legacy = parseLegacyMetadata(html);
+  const currentStatus = extractClassText(html, 'a-simplifiedState__label');
+  const currentPickupSlot = normalizePickupSlot(
+    extractClassText(html, 'p-detail__deliveryDate'),
+  );
+  const currentStore = extractCurrentStore(html);
+  const currentTotalFormatted = extractCurrentTotal(html);
 
   return {
     orderNumber,
     orderRef,
-    storeName,
-    storeAddress,
-    status,
-    pickupSlot,
-    total,
-    totalFormatted,
-    products,
+    storeName: currentStore.name || legacy.storeName,
+    storeAddress: currentStore.address || legacy.storeAddress,
+    status: currentStatus || legacy.status,
+    pickupSlot: currentPickupSlot || legacy.pickupSlot,
+    total: parsePrice(currentTotalFormatted || legacy.totalFormatted),
+    totalFormatted: currentTotalFormatted || legacy.totalFormatted,
+    products: mergeProducts(
+      parseCurrentProducts(html),
+      parseLegacyProducts(html),
+    ),
   };
 }
 
-function extractLastStatus(html: string): string {
-  const stepRe = /o-orderStatus__step[^>]*>[\s\S]*?<span[^>]*>([^<]+)/g;
-  let last = '';
-  let m: RegExpExecArray | null;
-  while ((m = stepRe.exec(html)) !== null) {
-    const t = decode(m[1].trim());
-    if (t) last = t;
-  }
-  return last;
+interface LegacyMetadata {
+  status: string;
+  pickupSlot?: string;
+  storeName: string;
+  storeAddress: string;
+  totalFormatted: string;
 }
 
-function parseProducts(html: string): OrderProduct[] {
-  const products: OrderProduct[] = [];
+function parseLegacyMetadata(html: string): LegacyMetadata {
+  const statusActive = html.match(
+    /o-orderStatus__step[^"']*(?:active|current)[^"']*["'][^>]*>[\s\S]*?<span[^>]*>([^<]+)/i,
+  ) ?? html.match(
+    /aria-current=["'][^"']*["'][^>]*>[\s\S]*?<span[^>]*>([^<]+)/i,
+  );
+  const pickup = html.match(/Retrait pr[eé]vu\s+le\s*:\s*([^\n<]+)/i);
+  const storeName = html.match(/m-storeInfo__name[^>]*>([^<]+)/i)
+    ?? html.match(/class=["'][^"']*storeName[^"']*["'][^>]*>([^<]+)/i);
+  const storeAddress = html.match(/m-storeInfo__address[^>]*>([\s\S]*?)<\/p>/i)
+    ?? html.match(/class=["'][^"']*storeAddress[^"']*["'][^>]*>([\s\S]*?)<\/(?:p|div)>/i);
+  const total = html.match(/m-orderSummary__totalPrice[^>]*>([^<]+)/i)
+    ?? html.match(/orderTotal[^>]*>([^<]+)/i);
 
-  // Découper en sections par catégorie
-  const catRe = /class="[^"]*m-orderProductList__categoryTitle[^"]*"[^>]*>([^<]+)/g;
-  const catMatches: Array<{ index: number; category: string }> = [];
-  let cM: RegExpExecArray | null;
-  while ((cM = catRe.exec(html)) !== null) {
-    catMatches.push({ index: cM.index, category: decode(cM[1].trim()) });
-  }
-
-  if (catMatches.length === 0) {
-    // Pas de catégories : parser tous les produits sans catégorie
-    return parseProductBlocks(html, '');
-  }
-
-  for (let i = 0; i < catMatches.length; i++) {
-    const start = catMatches[i].index;
-    const end = i + 1 < catMatches.length ? catMatches[i + 1].index : html.length;
-    const section = html.slice(start, end);
-    products.push(...parseProductBlocks(section, catMatches[i].category));
-  }
-
-  return products;
+  return {
+    status: statusActive ? cleanText(statusActive[1]) : extractLastLegacyStatus(html),
+    pickupSlot: pickup ? cleanText(pickup[1]) : undefined,
+    storeName: storeName ? cleanText(storeName[1]) : '',
+    storeAddress: storeAddress ? cleanText(storeAddress[1]) : '',
+    totalFormatted: total ? cleanText(total[1]) : '',
+  };
 }
 
-function parseProductBlocks(html: string, category: string): OrderProduct[] {
-  const products: OrderProduct[] = [];
+function extractLastLegacyStatus(html: string): string {
+  const pattern = /o-orderStatus__step[^>]*>[\s\S]*?<span[^>]*>([^<]+)/gi;
+  let match: RegExpExecArray | null;
+  let status = '';
+  while ((match = pattern.exec(html)) !== null) {
+    const value = cleanText(match[1]);
+    if (value) status = value;
+  }
+  return status;
+}
 
-  // Sélectionne les éléments dont la classe contient le token "m-orderProduct"
-  // (suivi de " ou espace, pas de "_"), ce qui exclut m-orderProduct__name, __quantity, etc.
-  const blockRe = /class="[^"]*m-orderProduct(?=["\s])[^"]*"[^>]*>/g;
-  const blockStarts: number[] = [];
-  let bM: RegExpExecArray | null;
-  while ((bM = blockRe.exec(html)) !== null) {
-    blockStarts.push(bM.index);
+function normalizePickupSlot(value: string): string | undefined {
+  const normalized = value
+    .replace(/^Retrait pr[eé]vu\s+le\s*:\s*/i, '')
+    .trim();
+  return normalized || undefined;
+}
+
+function extractCurrentStore(html: string): { name: string; address: string } {
+  const pattern =
+    /<div[^>]*class=["'][^"']*\bp-detail__address(?=\s|["'])[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = pattern.exec(html)) !== null) {
+    if (!/<strong[^>]*>\s*Magasin\s*<\/strong>/i.test(match[1])) continue;
+    const body = match[1]
+      .replace(/<strong[^>]*>\s*Magasin\s*<\/strong>/i, '')
+      .replace(
+        /<a[^>]*class=["'][^"']*\bp-detail__storeLink\b[^"']*["'][^>]*>[\s\S]*?<\/a>/gi,
+        '',
+      );
+    const lines = decode(body.replace(/<br\s*\/?\s*>/gi, '\n'))
+      .replace(/<[^>]*>/g, ' ')
+      .split('\n')
+      .map((line) => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    return { name: lines[0] ?? '', address: lines.slice(1).join(', ') };
   }
 
-  for (let i = 0; i < blockStarts.length; i++) {
-    const start = blockStarts[i];
-    const end = i + 1 < blockStarts.length ? blockStarts[i + 1] : html.length;
-    const block = html.slice(start, end);
+  return { name: extractClassText(html, 'a-pointOfService__place'), address: '' };
+}
 
-    // Nom et marque
-    const descM = block.match(
-      /m-orderProduct__name[^>]*>([\s\S]*?)<\/p>/,
+function extractCurrentTotal(html: string): string {
+  const receipt = html.match(
+    /class=["'][^"']*\bm-receipt__total\b[^"']*["'][^>]*>[\s\S]*?class=["'][^"']*\bm-receipt__value\b[^"']*["'][^>]*>([\s\S]*?)<\/strong>/i,
+  );
+  const detail = html.match(
+    /class=["'][^"']*\bp-detail__totalAmount\b[^"']*["'][^>]*>[\s\S]*?class=["'][^"']*\ba-amount\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+  );
+  return cleanText(receipt?.[1] ?? detail?.[1] ?? '');
+}
+
+function parseCurrentProducts(html: string): OrderProduct[] {
+  const categories = collectSections(
+    html,
+    /class=["'][^"']*\bo-products__category\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
+  );
+  if (categories.length === 0) return parseCurrentProductBlocks(html, '');
+
+  return categories.flatMap((entry, index) => {
+    const end = categories[index + 1]?.index ?? html.length;
+    return parseCurrentProductBlocks(html.slice(entry.index, end), entry.category);
+  });
+}
+
+function parseCurrentProductBlocks(html: string, category: string): OrderProduct[] {
+  const starts = collectBlockStarts(
+    html,
+    /class=["'][^"']*\bo-products__line\b[^"']*["'][^>]*>/gi,
+  );
+
+  return starts.flatMap((start, index) => {
+    const block = html.slice(start, starts[index + 1] ?? html.length);
+    const description = block.match(
+      /class=["'][^"']*\bproduct-thumbnail__description\b[^"']*["'][^>]*>([\s\S]*?)<\/p>/i,
+    )?.[1] ?? '';
+    const brand = cleanText(
+      description.match(/<strong[^>]*>([\s\S]*?)<\/strong>/i)?.[1] ?? '',
     );
-    const descHtml = descM?.[1] ?? '';
-    const brandM = descHtml.match(/<strong[^>]*>\s*([^<]+)\s*<\/strong>/);
-    const brand = brandM ? decode(brandM[1].trim()) : '';
-    const nameRaw = descHtml.replace(/<strong[^>]*>[\s\S]*?<\/strong>/g, '');
-    const name = decode(nameRaw.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim());
+    const name = cleanText(
+      description.replace(/<strong[^>]*>[\s\S]*?<\/strong>/i, ''),
+    );
+    if (!name) return [];
 
-    if (!name) continue;
+    const quantityText = extractClassText(block, 'p-detail__productQuantity');
+    const quantity = Number.parseInt(quantityText.match(/(\d+)/)?.[1] ?? '1', 10);
+    const priceFormatted = extractClassText(block, 'a-amount__amount');
 
-    // Quantité : "Quantité : 6" ou "x6" ou juste "6"
-    const qtyM = block.match(/(?:Quantit[eé]\s*:\s*|[×x]\s*)(\d+)/i)
-      ?? block.match(/m-orderProduct__quantity[^>]*>[^<]*?(\d+)/);
-    const quantity = qtyM ? parseInt(qtyM[1], 10) : 1;
+    return [{
+      name,
+      brand,
+      quantity,
+      price: parsePrice(priceFormatted),
+      priceFormatted,
+      category,
+    }];
+  });
+}
 
-    // Prix
-    const priceM = block.match(/m-orderProduct__price[^>]*>([^<]+)/);
-    const priceFormatted = priceM ? decode(priceM[1].trim()) : '';
-    const price = parsePrice(priceFormatted);
+function parseLegacyProducts(html: string): OrderProduct[] {
+  const categories = collectSections(
+    html,
+    /class=["'][^"']*m-orderProductList__categoryTitle[^"']*["'][^>]*>([^<]+)/gi,
+  );
+  if (categories.length === 0) return parseLegacyProductBlocks(html, '');
 
-    products.push({ name, brand, quantity, price, priceFormatted, category });
+  return categories.flatMap((entry, index) => {
+    const end = categories[index + 1]?.index ?? html.length;
+    return parseLegacyProductBlocks(html.slice(entry.index, end), entry.category);
+  });
+}
+
+function parseLegacyProductBlocks(html: string, category: string): OrderProduct[] {
+  const starts = collectBlockStarts(
+    html,
+    /class=["'][^"']*m-orderProduct(?=["'\s])[^"']*["'][^>]*>/gi,
+  );
+
+  return starts.flatMap((start, index) => {
+    const block = html.slice(start, starts[index + 1] ?? html.length);
+    const description = block.match(
+      /m-orderProduct__name[^>]*>([\s\S]*?)<\/p>/i,
+    )?.[1] ?? '';
+    const brand = cleanText(
+      description.match(/<strong[^>]*>\s*([^<]+)\s*<\/strong>/i)?.[1] ?? '',
+    );
+    const name = cleanText(
+      description.replace(/<strong[^>]*>[\s\S]*?<\/strong>/gi, ''),
+    );
+    if (!name) return [];
+
+    const quantityMatch = block.match(/(?:Quantit[eé]\s*:\s*|[×x]\s*)(\d+)/i)
+      ?? block.match(/m-orderProduct__quantity[^>]*>[^<]*?(\d+)/i);
+    const quantity = Number.parseInt(quantityMatch?.[1] ?? '1', 10);
+    const priceFormatted = cleanText(
+      block.match(/m-orderProduct__price[^>]*>([^<]+)/i)?.[1] ?? '',
+    );
+
+    return [{
+      name,
+      brand,
+      quantity,
+      price: parsePrice(priceFormatted),
+      priceFormatted,
+      category,
+    }];
+  });
+}
+
+function mergeProducts(current: OrderProduct[], legacy: OrderProduct[]): OrderProduct[] {
+  const products = new Map<string, OrderProduct>();
+  for (const product of [...current, ...legacy]) {
+    const key = [product.name, product.brand, product.category]
+      .map((value) => value.toLocaleLowerCase('fr').replace(/\s+/g, ' ').trim())
+      .join('|');
+    if (!products.has(key)) products.set(key, product);
   }
+  return [...products.values()];
+}
 
-  return products;
+function collectSections(
+  html: string,
+  pattern: RegExp,
+): Array<{ index: number; category: string }> {
+  const sections: Array<{ index: number; category: string }> = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) !== null) {
+    sections.push({ index: match.index, category: cleanText(match[1]) });
+  }
+  return sections;
+}
+
+function collectBlockStarts(html: string, pattern: RegExp): number[] {
+  const starts: number[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(html)) !== null) starts.push(match.index);
+  return starts;
+}
+
+function extractClassText(html: string, className: string): string {
+  const escaped = className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `class=["'][^"']*\\b${escaped}\\b[^"']*["'][^>]*>([\\s\\S]*?)<\\/(?:div|span|p|strong)>`,
+    'i',
+  );
+  const match = html.match(pattern);
+  return match ? cleanText(match[1]) : '';
+}
+
+function cleanText(value: string): string {
+  return decode(
+    value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim(),
+  );
 }

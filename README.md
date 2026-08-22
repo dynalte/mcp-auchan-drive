@@ -77,6 +77,7 @@ claude mcp add auchan-drive node /chemin/vers/dist/index.js --env AUCHAN_BROWSER
 | `AUCHAN_BROWSER` | `chrome` | Navigateur source des cookies : `chrome` ou `firefox` |
 | `AUCHAN_CHROME_PROFILE` | `Default` | Profil Chrome à lire pour les cookies |
 | `AUCHAN_FIREFOX_PROFILE` | — | Profil Firefox : nom du profil ou chemin absolu vers `cookies.sqlite` |
+| `AUCHAN_USER_AGENT` | Firefox Linux | User-Agent envoyé à Auchan (à aligner sur le navigateur si DataDome refuse la session) |
 | `AUCHAN_MIN_INTERVAL_MS` | `1000` | Délai minimum entre deux requêtes (anti-DataDome) |
 | `AUCHAN_JITTER_MS` | `400` | Jitter aléatoire ajouté au délai |
 | `AUCHAN_MAX_RETRIES` | `3` | Nombre de retries sur 403/429 (DataDome) |
@@ -137,6 +138,7 @@ quelle requête vers `www.auchan.fr` → Headers de requête → Cookie).
 | `get_loyalty_info` | — | Lit le programme de fidélité : cagnotte, carte Waaoh, Jour W!, défis |
 | `get_loyalty_history` | — | Historique des transactions de cagnotte des 3 derniers mois |
 | `get_orders` | `period?: string` | Historique des commandes (`10days`, `30days`, `3months`…) |
+| `get_order_detail` | `order_ref: string`, `order_number: string` | Détail d'une commande : magasin, créneau, total et lignes produits |
 | `get_favorites` | — | Liste des produits favoris avec prix actuels et promos en cours |
 
 ### Exemple de session Claude — courses
@@ -245,7 +247,8 @@ mcp-auchan-drive (Node.js / stdio)
 
 - `get_loyalty_info()` → `GET /fidelite/accueil` → HTML parsé par regex
 - `get_loyalty_history()` → `GET /fidelite/ma-carte/historique` → HTML parsé par regex
-- `get_orders(period)` → `GET /client/mes-commandes?days=90` → HTML parsé par regex
+- `get_orders(period)` → `GET /client/mes-commandes?days=90` → HTML initial puis hydratation des résumés différés via les fragments CREST `data-fetch`
+- `get_order_detail(ref, number)` → `GET /client/mes-commandes/{ref}/{number}` → parse les DOM historique et actuel (2026)
 - `get_favorites()` → `GET /client/mes-produits-preferes` → HTML parsé par regex
 
 Toutes ces pages sont server-side rendered — les données sont dans le DOM initial,

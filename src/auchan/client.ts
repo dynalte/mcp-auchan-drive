@@ -62,6 +62,9 @@ export class AuchanClient {
       const headers: Record<string, string> = {
         Cookie: cookie,
         'X-Requested-With': 'XMLHttpRequest',
+        'User-Agent': process.env.AUCHAN_USER_AGENT ??
+          'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:141.0) Gecko/20100101 Firefox/141.0',
+        'Accept-Language': 'fr-FR,fr;q=0.9,en;q=0.5',
         ...(init.headers as Record<string, string> | undefined),
       };
 
@@ -151,11 +154,67 @@ export class AuchanClient {
   /** Historique des commandes drive. */
   async getOrders(period: OrderPeriod = '3months'): Promise<Order[]> {
     const queryString = this.buildOrdersPeriodQuery(period);
+    const ordersUrl = `${this.baseUrl}/client/mes-commandes?${queryString}`;
     const response = await this.request(
-      `${this.baseUrl}/client/mes-commandes?${queryString}`,
+      ordersUrl,
       { headers: { Accept: 'text/html' } },
     );
-    return parseOrdersPage(await response.text());
+    const html = await response.text();
+    const orders = parseOrdersPage(html);
+    const hydrationTargets = this.extractOrderHydrationTargets(html);
+
+    for (let index = 0; index < orders.length; index++) {
+      const order = orders[index];
+      const target = hydrationTargets.get(`${order.orderRef}/${order.orderNumber}`);
+      if (!target) continue;
+
+      const targetUrl = new URL(target, this.baseUrl);
+      if (targetUrl.origin !== new URL(this.baseUrl).origin) {
+        throw new Error(`Refusing cross-origin CREST hydration URL: ${targetUrl.origin}`);
+      }
+
+      const fragmentResponse = await this.request(
+        targetUrl.toString(),
+        {
+          headers: {
+            Accept: 'application/crest',
+            'X-Crest-Renderer': 'customer-renderer',
+            Referer: ordersUrl,
+          },
+        },
+      );
+      const fragment = await fragmentResponse.text();
+      const wrappedFragment =
+        `<li>${fragment}` +
+        `<a href="/client/mes-commandes/${order.orderRef}/${order.orderNumber}"></a>` +
+        `</li>`;
+      const hydrated = parseOrdersPage(wrappedFragment)[0];
+      if (!hydrated) continue;
+
+      orders[index] = {
+        ...order,
+        date: hydrated.date || order.date,
+        storeName: hydrated.storeName || order.storeName,
+        status: hydrated.status || order.status,
+        productCount: hydrated.productCount,
+        total: hydrated.total,
+        totalFormatted: hydrated.totalFormatted || order.totalFormatted,
+      };
+    }
+
+    return orders;
+  }
+
+  /** Extrait les fragments CREST qui hydratent les résumés de commande. */
+  private extractOrderHydrationTargets(html: string): Map<string, string> {
+    const targets = new Map<string, string>();
+    const pattern = /<li[^>]*data-fetch=["']([^"']+\/orders\/details\/([^/"']+)\/(\d+)\/[^"']+)["'][^>]*>/gi;
+    let match: RegExpExecArray | null;
+
+    while ((match = pattern.exec(html)) !== null) {
+      targets.set(`${match[2]}/${match[3]}`, match[1].replace(/&amp;/g, '&'));
+    }
+    return targets;
   }
 
   /** Détail complet d'une commande (produits, créneau de retrait, statut). */

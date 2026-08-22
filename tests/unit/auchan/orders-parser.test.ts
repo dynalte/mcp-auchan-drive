@@ -56,6 +56,19 @@ const SINGLE_ORDER_HTML = `
 // HTML sans aucune commande (liste vide)
 const EMPTY_HTML = `<html><body><ul></ul></body></html>`;
 
+const CURRENT_ORDER_HTML = `
+<html><body><ul>
+  <li class="t-orders__item">
+    <div class="a-pointOfService__place">Auchan Drive Ville Test</div>
+    <div class="p-order__reference">Commande n° 100000001 du 8 août 2026</div>
+    <div class="a-simplifiedState__label">Retirée</div>
+    <div class="m-productThumbnails__count"><span>42</span> Produits</div>
+    <div class="p-order__totalAmount">123,45 &#x20AC;</div>
+    <a href="/client/mes-commandes/AROM-TEST/100000001">Voir le détail</a>
+  </li>
+</ul></body></html>
+`;
+
 describe('parseOrdersPage', () => {
   // ── Liste de 3 commandes ────────────────────────────────────────────────────
 
@@ -147,5 +160,21 @@ describe('parseOrdersPage', () => {
   it('retourne [] pour un HTML vide', () => {
     const orders = parseOrdersPage('<html></html>');
     expect(orders).toEqual([]);
+  });
+
+  it('parse les classes CSS de la structure actuelle', () => {
+    const orders = parseOrdersPage(CURRENT_ORDER_HTML);
+
+    expect(orders).toHaveLength(1);
+    expect(orders[0]).toMatchObject({
+      orderRef: 'AROM-TEST',
+      orderNumber: '100000001',
+      date: '8 août 2026',
+      storeName: 'Auchan Drive Ville Test',
+      status: 'Retirée',
+      productCount: 42,
+      total: 12345,
+      totalFormatted: '123,45 €',
+    });
   });
 });
