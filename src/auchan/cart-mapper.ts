@@ -27,6 +27,19 @@ interface RawItem {
   offering?: RawOffering;
 }
 
+interface RawProduct {
+  name?: string;
+  brand?: {
+    name?: string;
+  };
+}
+
+interface RawEnrichedItem {
+  productId?: string;
+  cartItem?: RawItem;
+  product?: RawProduct;
+}
+
 interface RawCartInner {
   id?: string;
   prices?: {
@@ -35,10 +48,18 @@ interface RawCartInner {
   items?: RawItem[];
 }
 
+interface RawCartContainer {
+  cart?: RawCartInner;
+
+  /**
+   * Vue enrichie renvoyée par GET /cart.
+   * Elle contient notamment product.name, absent de cart.cart.items.
+   */
+  items?: RawEnrichedItem[];
+}
+
 interface RawCartResponse {
-  cart?: {
-    cart?: RawCartInner;
-  };
+  cart?: RawCartContainer;
 }
 
 function amount(price: RawPrice | undefined): number {
@@ -46,20 +67,60 @@ function amount(price: RawPrice | undefined): number {
 }
 
 /**
+ * Construit l'index des libellés depuis la vue enrichie cart.items.
+ */
+function extractProductLabels(
+  items: RawEnrichedItem[] | undefined,
+): Map<string, string> {
+  const labels = new Map<string, string>();
+
+  for (const item of items ?? []) {
+    const productId =
+      item.productId ??
+      item.cartItem?.productId ??
+      '';
+
+    const label = item.product?.name?.trim() ?? '';
+
+    if (productId && label) {
+      labels.set(productId, label);
+    }
+  }
+
+  return labels;
+}
+
+/**
  * Mappe la réponse brute de GET /cart vers le type Cart.
- * Les montants sont en centimes — pas de conversion nécessaire.
+ *
+ * cart.cart.items fournit les lignes opérationnelles :
+ * quantités, prix et identifiants.
+ *
+ * cart.items fournit les informations produit enrichies :
+ * nom, marque, images, etc.
+ *
+ * Les deux vues sont fusionnées par productId.
  */
 export function mapCart(raw: unknown): Cart {
   const data = raw as RawCartResponse;
-  const inner = data?.cart?.cart ?? {};
+  const container = data?.cart ?? {};
+  const inner = container.cart ?? {};
 
-  const items: CartItem[] = (inner.items ?? []).map((item): CartItem => ({
-    productId: item.productId ?? '',
-    label: '',  // non disponible dans GET /cart — enrichi ultérieurement via search
-    quantity: item.desiredQuantity ?? 0,
-    unitPrice: amount(item.offering?.prices?.price),
-    totalPrice: amount(item.offering?.prices?.totalPrice),
-  }));
+  const labels = extractProductLabels(container.items);
+
+  const items: CartItem[] = (inner.items ?? []).map(
+    (item): CartItem => {
+      const productId = item.productId ?? '';
+
+      return {
+        productId,
+        label: labels.get(productId) ?? '',
+        quantity: item.desiredQuantity ?? 0,
+        unitPrice: amount(item.offering?.prices?.price),
+        totalPrice: amount(item.offering?.prices?.totalPrice),
+      };
+    },
+  );
 
   return {
     items,
