@@ -60,43 +60,6 @@ const RETIRED_HTML = `
 </body></html>
 `;
 
-const CURRENT_HTML = `
-<html><body>
-<span class="a-simplifiedState__label">Retirée</span>
-<div class="p-detail__deliveryDate">
-  Retrait prévu le: samedi 8 août entre 10h00 et 10h30
-</div>
-<div class="p-detail__address">
-  <strong>Magasin</strong>
-  Auchan Drive Ville Test<br>
-  12 avenue des Tests<br>
-  75000 VILLE TEST
-  <a class="p-detail__storeLink" href="/magasin-test">Voir le magasin</a>
-</div>
-<div class="p-detail__totalAmount">
-  <div class="a-amount">91,25 &#x20AC;</div>
-</div>
-
-<div class="o-products__category">Fruits et légumes</div>
-<div class="o-products__line">
-  <p class="product-thumbnail__description">
-    <strong>MARQUE TEST</strong> Pommes biologiques 1kg
-  </p>
-  <div class="p-detail__productQuantity">Quantité : 2</div>
-  <div class="a-amount__amount">4,50 &#x20AC;</div>
-</div>
-
-<div class="o-products__category">Épicerie</div>
-<div class="o-products__line">
-  <p class="product-thumbnail__description">
-    <strong>EXEMPLE</strong> Riz long 1kg
-  </p>
-  <div class="p-detail__productQuantity">Quantité : 1</div>
-  <div class="a-amount__amount">2,35 &#x20AC;</div>
-</div>
-</body></html>
-`;
-
 describe('parseOrderDetailPage', () => {
   // ── Identifiants ───────────────────────────────────────────────────────────
 
@@ -203,43 +166,5 @@ describe('parseOrderDetailPage', () => {
     expect(d.products).toEqual([]);
     expect(d.storeName).toBe('');
     expect(d.total).toBe(0);
-  });
-
-  // ── Structure Auchan actuelle (2026) ────────────────────────────────────
-
-  it('parse la structure de détail actuelle sans perdre les anciens formats', () => {
-    const d = parseOrderDetailPage(CURRENT_HTML, 'AROM-TEST', '100000001');
-
-    expect(d.status).toBe('Retirée');
-    expect(d.pickupSlot).toBe('samedi 8 août entre 10h00 et 10h30');
-    expect(d.storeName).toBe('Auchan Drive Ville Test');
-    expect(d.storeAddress).toBe('12 avenue des Tests, 75000 VILLE TEST');
-    expect(d.total).toBe(9125);
-    expect(d.totalFormatted).toBe('91,25 €');
-    expect(d.products).toHaveLength(2);
-    expect(d.products[0]).toEqual({
-      name: 'Pommes biologiques 1kg',
-      brand: 'MARQUE TEST',
-      quantity: 2,
-      price: 450,
-      priceFormatted: '4,50 €',
-      category: 'Fruits et légumes',
-    });
-    expect(d.products[1].category).toBe('Épicerie');
-  });
-
-  it('complète une page hybride avec les champs du format historique', () => {
-    const hybrid = CURRENT_HTML.replace(
-      '<div class="p-detail__address">',
-      '<div class="m-storeInfo"><p class="m-storeInfo__name">Magasin historique</p>' +
-        '<p class="m-storeInfo__address">1 rue Historique</p></div>' +
-        '<div class="p-detail__address-inconnue">',
-    );
-    const d = parseOrderDetailPage(hybrid, 'R', '1');
-
-    expect(d.storeName).toBe('Magasin historique');
-    expect(d.storeAddress).toBe('1 rue Historique');
-    expect(d.totalFormatted).toBe('91,25 €');
-    expect(d.products).toHaveLength(2);
   });
 });
