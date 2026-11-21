@@ -17,6 +17,7 @@ export interface SearchProduct {
   format?: string;     // span.product-attribute
   available: boolean;  // true si pas class "disabled" sur le quantity-selector
   catalogCode?: string;// href="/produit/pr-C1264653" → "C1264653"
+  image?: string;      // <meta itemprop="image"> (CDN Auchan, 300 px)
 }
 
 /** Extrait la valeur d'un attribut HTML depuis une balise ouvrante. */
@@ -101,6 +102,12 @@ export function parseSearchResults(html: string): SearchProduct[] {
     const hrefM = ctx.match(/href="[^"]*\/pr-(C\d+)/);
     const catalogCode = hrefM ? hrefM[1] : undefined;
 
+    // Photo produit (CDN Auchan). 300 px suffit pour une vignette de liste.
+    const imgM = ctx.match(/itemprop="image" content="([^"]+)"/);
+    const image = imgM
+      ? decode(imgM[1]).replace(/width=\d+/, 'width=300').replace(/height=\d+/, 'height=300')
+      : undefined;
+
     // Disponibilité
     const available = !tag.includes('disabled');
 
@@ -116,6 +123,7 @@ export function parseSearchResults(html: string): SearchProduct[] {
       format,
       available,
       catalogCode,
+      image,
     });
   }
 
